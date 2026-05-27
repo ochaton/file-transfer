@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>P2P File Transfer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>P2P File Transfer</h1>
+    <p class="sub">Direct WebRTC. STUN only. No relay.</p>
+  </header>
+
+  <main>
+    <!-- SENDER VIEW -->
+    <section id="senderView" hidden>
+      <h2>Send a file</h2>
+
+      <div class="step">
+        <label class="filepick">
+          <input type="file" id="fileInput">
+          <span>Click or drop file here</span>
+        </label>
+        <div id="fileMeta" class="meta" hidden></div>
+        <div id="hashProgress" class="progress" hidden>
+          <div>Hashing: <span id="hashPct">0%</span></div>
+          <progress id="hashBar" max="100" value="0"></progress>
+        </div>
+      </div>
+
+      <div class="step" id="shareStep" hidden>
+        <h3>1. Share this link with receiver</h3>
+        <textarea id="shareLink" readonly rows="3"></textarea>
+        <div class="row">
+          <button id="copyLink">Copy link</button>
+          <button id="showQr">Show QR</button>
+        </div>
+        <div id="qrBox" class="qr" hidden></div>
+      </div>
+
+      <div class="step" id="answerStep" hidden>
+        <h3>2. Paste receiver's answer code</h3>
+        <textarea id="answerIn" rows="4" placeholder="Paste answer code from receiver"></textarea>
+        <button id="acceptAnswer">Accept answer</button>
+      </div>
+
+      <div class="step" id="senderTransfer" hidden>
+        <h3>3. Transfer</h3>
+        <div id="senderStatus" class="meta"></div>
+        <progress id="sendBar" max="100" value="0"></progress>
+        <div id="sendStats" class="meta"></div>
+      </div>
+    </section>
+
+    <!-- RECEIVER VIEW -->
+    <section id="receiverView" hidden>
+      <h2>Receive a file</h2>
+
+      <div class="step">
+        <div id="recvMeta" class="meta">Loading offer...</div>
+      </div>
+
+      <div class="step" id="downloadStep" hidden>
+        <button id="startDownload">Start download</button>
+      </div>
+
+      <div class="step" id="answerOutStep" hidden>
+        <h3>Send this code back to sender</h3>
+        <textarea id="answerOut" readonly rows="4"></textarea>
+        <div class="row">
+          <button id="copyAnswer">Copy answer</button>
+          <button id="showAnswerQr">Show QR</button>
+        </div>
+        <div id="answerQrBox" class="qr" hidden></div>
+      </div>
+
+      <div class="step" id="recvTransfer" hidden>
+        <h3>Receiving</h3>
+        <div id="recvStatus" class="meta"></div>
+        <progress id="recvBar" max="100" value="0"></progress>
+        <div id="recvStats" class="meta"></div>
+        <div id="recvResult" class="meta" hidden></div>
+      </div>
+    </section>
+
+    <section class="log-section">
+      <h3>Log <button id="clearLog" class="link">clear</button></h3>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/" id="repoLink">source</a>
+    &middot; STUN-only direct P2P &middot; no TURN, no proxy
+  </footer>
+
+  <script src="lib/hash-wasm.min.js"></script>
+  <script src="lib/qrcode.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
