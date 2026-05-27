@@ -85,6 +85,26 @@ textarea {
 progress { width: 100%; height: 10px; }
 
 .qr { margin-top: 12px; background: white; padding: 12px; border: 1px solid var(--border); border-radius: 6px; display: inline-block; }
+
+.cands {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--code-bg);
+  padding: 8px 10px;
+}
+.cands-label { font: 11px/1.4 var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.cands .summary { font-size: 12px; margin-bottom: 6px; }
+.cands .summary.ok   { color: var(--ok); }
+.cands .summary.warn { color: var(--warn); }
+.cands .summary.err  { color: var(--err); }
+.cands ul { margin: 0; padding-left: 18px; list-style: none; }
+.cands li { font: 11px/1.5 var(--mono); color: var(--muted); }
+.cands li .type { display: inline-block; min-width: 48px; color: var(--fg); font-weight: 600; }
+.cands li.host  .type { color: #6b7280; }
+.cands li.srflx .type { color: var(--ok); }
+.cands li.relay .type { color: var(--accent); }
+.cands li.tcp   { opacity: 0.65; }
 .qr img, .qr svg { display: block; }
 
 .log-section { margin-top: 24px; }

@@ -212,9 +212,188 @@ function newPC() {
     if (pc.iceConnectionState === 'failed') {
       log('Direct P2P unavailable. STUN insufficient (symmetric NAT / CGNAT / strict firewall). No TURN fallback by design.', 'err');
     }
+    updateDiag(pc);
   };
-  pc.onconnectionstatechange = () => log(`PC: ${pc.connectionState}`, 'muted');
+  pc.onconnectionstatechange = () => {
+    log(`PC: ${pc.connectionState}`, 'muted');
+    updateDiag(pc);
+  };
+  pc.onicegatheringstatechange = () => updateDiag(pc);
+  // STUN errors are surfaced here — e.g. STUN host unreachable, auth failure.
+  // Useful for diagnosing "no srflx gathered" cases.
+  pc.onicecandidateerror = (e) => {
+    log(`STUN error: code=${e.errorCode} text="${e.errorText}" url=${e.url}`, 'warn');
+    updateDiag(pc);
+  };
   return pc;
+}
+
+// ---------- Diagnostics ----------
+//
+// Always-on diagnostic dump driven by ICE/PC state transitions. Plain text so
+// users can paste it into a chat to debug failed connections (e.g. friend
+// shares their diag block back to you so you can see which candidate pairs
+// failed on their side).
+let _diagDebounce = 0;
+async function updateDiag(pc) {
+  clearTimeout(_diagDebounce);
+  _diagDebounce = setTimeout(() => doDiag(pc), 500);
+}
+
+async function doDiag(pc) {
+  const section = $('diagSection');
+  const out = $('diag');
+  if (!section || !out) return;
+
+  const lines = [];
+  lines.push(`time: ${new Date().toISOString()}`);
+  lines.push(`ua:   ${navigator.userAgent}`);
+  lines.push(`state: ice=${pc.iceConnectionState} conn=${pc.connectionState} gather=${pc.iceGatheringState} sig=${pc.signalingState}`);
+
+  function classify(sdp) {
+    if (!sdp) return 'n/a';
+    const cs = parseCandidates(sdp);
+    const counts = {};
+    for (const c of cs) {
+      const key = `${c.type}${c.isMdns ? '(mdns)' : ''}${c.proto === 'tcp' ? '/tcp' : ''}`;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    const parts = Object.entries(counts).map(([k, v]) => `${v}×${k}`).join(', ');
+    return parts || 'none';
+  }
+  lines.push(`local cands:  ${classify(pc.localDescription && pc.localDescription.sdp)}`);
+  lines.push(`remote cands: ${classify(pc.remoteDescription && pc.remoteDescription.sdp)}`);
+
+  let stats;
+  try { stats = await pc.getStats(); }
+  catch (e) { lines.push(`getStats failed: ${e.message}`); }
+
+  if (stats) {
+    const locals = new Map();
+    const remotes = new Map();
+    const pairs = [];
+    let selectedPairId = null;
+    stats.forEach((r) => {
+      if (r.type === 'local-candidate')  locals.set(r.id, r);
+      if (r.type === 'remote-candidate') remotes.set(r.id, r);
+      if (r.type === 'candidate-pair')   pairs.push(r);
+      if (r.type === 'transport' && r.selectedCandidatePairId) selectedPairId = r.selectedCandidatePairId;
+    });
+
+    const fmtCand = (c) => c ? `${c.candidateType || '?'}/${(c.protocol || '?').toUpperCase()} ${c.ip || c.address || '?'}:${c.port || '?'}` : '?';
+
+    lines.push('');
+    lines.push(`pairs (${pairs.length}):`);
+    // Sort: selected first, then by state useful, succeeded > inProgress > failed
+    const stateRank = (s) => ({ succeeded: 0, inProgress: 1, 'in-progress': 1, waiting: 2, frozen: 3, failed: 4 }[s] ?? 9);
+    pairs.sort((a, b) => stateRank(a.state) - stateRank(b.state));
+    for (const p of pairs) {
+      const sel = p.id === selectedPairId ? ' *SELECTED*' : '';
+      const local = locals.get(p.localCandidateId);
+      const remote = remotes.get(p.remoteCandidateId);
+      const rtt = p.currentRoundTripTime != null ? `${Math.round(p.currentRoundTripTime * 1000)}ms` : '-';
+      const reqs = p.requestsSent != null ? `req=${p.requestsSent}/${p.responsesReceived || 0}` : '';
+      const sent = p.bytesSent ? ` sent=${p.bytesSent}` : '';
+      const recv = p.bytesReceived ? ` recv=${p.bytesReceived}` : '';
+      lines.push(`  ${p.state.padEnd(11)} L:${fmtCand(local)}  R:${fmtCand(remote)}  ${reqs} rtt=${rtt}${sent}${recv}${sel}`);
+    }
+
+    if (selectedPairId) {
+      const sp = pairs.find((p) => p.id === selectedPairId);
+      lines.push('');
+      lines.push(`selected: ${sp ? sp.state : '?'}`);
+    }
+  }
+
+  out.textContent = lines.join('\n');
+  section.hidden = false;
+}
+
+(() => {
+  const btn = document.getElementById('copyDiag');
+  if (btn) btn.onclick = () => {
+    const text = document.getElementById('diag').textContent;
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => log('Diagnostics copied', 'ok'));
+  };
+})();
+
+// ---------- ICE candidate inspector ----------
+//
+// Parse local SDP, classify candidates, render a brief diagnostic panel.
+// Helps users see WHY connection fails: missing srflx => STUN blocked, all
+// mDNS => host candidates won't resolve for remote peer, etc.
+function parseCandidates(sdp) {
+  const list = [];
+  const rx = /a=candidate:(\S+) (\d+) (\S+) (\d+) (\S+) (\d+) typ (\S+)([^\r\n]*)/g;
+  let m;
+  while ((m = rx.exec(sdp)) !== null) {
+    const ip = m[5];
+    const proto = m[3].toLowerCase();
+    list.push({
+      foundation: m[1],
+      component: +m[2],
+      proto,
+      priority: +m[4],
+      ip,
+      port: +m[6],
+      type: m[7],
+      isMdns: /\.local$/i.test(ip),
+      tail: m[8],
+    });
+  }
+  return list;
+}
+
+function renderCandidates(container, sdp, label = 'Your ICE candidates') {
+  const cands = parseCandidates(sdp);
+  container.hidden = false;
+  container.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'cands-label';
+  head.textContent = label;
+  container.appendChild(head);
+
+  if (cands.length === 0) {
+    container.innerHTML += '<div class="summary err">No ICE candidates gathered. Check network / STUN reachability.</div>';
+    return;
+  }
+
+  const hasSrflx = cands.some((c) => c.type === 'srflx' || c.type === 'prflx');
+  const hasReachableHost = cands.some((c) => c.type === 'host' && !c.isMdns && c.proto === 'udp');
+  const hasRelay = cands.some((c) => c.type === 'relay');
+
+  const summary = document.createElement('div');
+  if (hasSrflx) {
+    summary.className = 'summary ok';
+    summary.textContent = `✓ Public reflexive (srflx) candidate gathered — direct P2P possible unless peer's NAT is symmetric / blocks inbound UDP.`;
+  } else if (hasReachableHost) {
+    summary.className = 'summary warn';
+    summary.textContent = `⚠ No srflx — STUN may be blocked. Only directly-routable host candidate(s) available; will work only if peer is on the same network.`;
+  } else if (hasRelay) {
+    summary.className = 'summary ok';
+    summary.textContent = `✓ Relay candidate (unexpected — app uses STUN only).`;
+  } else {
+    summary.className = 'summary err';
+    summary.textContent = `✗ Only mDNS host candidates (.local). STUN appears blocked; peer cannot resolve .local addresses. Direct P2P will fail.`;
+  }
+  container.appendChild(summary);
+
+  const ul = document.createElement('ul');
+  // Sort: srflx first, then host, then tcp at the bottom
+  cands.sort((a, b) => {
+    const order = (c) => (c.proto === 'tcp' ? 100 : 0) + (c.type === 'srflx' ? 0 : c.type === 'host' ? 10 : 20);
+    return order(a) - order(b);
+  });
+  for (const c of cands) {
+    const li = document.createElement('li');
+    li.className = `${c.type} ${c.proto}`;
+    const ipDisplay = c.isMdns ? `${c.ip} (mDNS)` : c.ip;
+    li.innerHTML = `<span class="type">${escapeHtml(c.type)}</span> ${escapeHtml(c.proto.toUpperCase())}  ${escapeHtml(ipDisplay)}:${c.port}`;
+    ul.appendChild(li);
+  }
+  container.appendChild(ul);
 }
 
 // ---------- QR helper (qrcode-generator global `qrcode`) ----------
@@ -359,6 +538,7 @@ function initSender() {
     shareLink.value = url;
     shareStep.hidden = false;
     answerStep.hidden = false;
+    renderCandidates($('senderCands'), pc.localDescription.sdp, 'Your ICE candidates');
     log(`Share link ready (${url.length} chars)`);
 
     copyLink.onclick = () => {
@@ -388,6 +568,7 @@ function initSender() {
     acceptAnswer.disabled = true;
     answerIn.disabled = true;
     senderTrans.hidden = false;
+    renderCandidates($('senderRemoteCands'), answer.sdp.sdp, 'Receiver\'s ICE candidates');
     senderStatus.textContent = 'Waiting for channels to open...';
 
     await Promise.all([ctrl, ...dataChans].map(waitChanOpen));
@@ -490,6 +671,7 @@ function initReceiver(packedOffer) {
 
     try {
       await pc.setRemoteDescription(unpacked.sdp);
+      renderCandidates($('recvRemoteCands'), unpacked.sdp.sdp, 'Sender\'s ICE candidates');
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitIceComplete(pc);
@@ -500,6 +682,7 @@ function initReceiver(packedOffer) {
     const packed = await pack({ sdp: pc.localDescription });
     answerOut.value = packed;
     answerOutStep.hidden = false;
+    renderCandidates($('recvCands'), pc.localDescription.sdp, 'Your ICE candidates');
     log(`Answer code ready (${packed.length} chars). Send it back to sender.`);
     recvStatus.textContent = 'Waiting for sender to paste your answer code...';
 

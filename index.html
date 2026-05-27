@@ -37,6 +37,7 @@
           <button id="showQr">Show QR</button>
         </div>
         <div id="qrBox" class="qr" hidden></div>
+        <div id="senderCands" class="cands" hidden></div>
       </div>
 
       <div class="step" id="answerStep" hidden>
@@ -47,6 +48,7 @@
 
       <div class="step" id="senderTransfer" hidden>
         <h3>3. Transfer</h3>
+        <div id="senderRemoteCands" class="cands" hidden></div>
         <div id="senderStatus" class="meta"></div>
         <progress id="sendBar" max="100" value="0"></progress>
         <div id="sendStats" class="meta"></div>
@@ -73,10 +75,12 @@
           <button id="showAnswerQr">Show QR</button>
         </div>
         <div id="answerQrBox" class="qr" hidden></div>
+        <div id="recvCands" class="cands" hidden></div>
       </div>
 
       <div class="step" id="recvTransfer" hidden>
         <h3>Receiving</h3>
+        <div id="recvRemoteCands" class="cands" hidden></div>
         <div id="recvStatus" class="meta"></div>
         <progress id="recvBar" max="100" value="0"></progress>
         <div id="recvStats" class="meta"></div>
@@ -87,6 +91,11 @@
     <section class="log-section">
       <h3>Log <button id="clearLog" class="link">clear</button></h3>
       <pre id="log"></pre>
+    </section>
+
+    <section class="log-section" id="diagSection" hidden>
+      <h3>Diagnostics <button id="copyDiag" class="link">copy</button></h3>
+      <pre id="diag"></pre>
     </section>
   </main>
 
