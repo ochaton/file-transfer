@@ -24,8 +24,12 @@
 // ---------- Constants ----------
 const ICE_SERVERS  = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 const CHUNK_SIZE   = 64 * 1024;
-const BUF_HIGH     = 16 * 1024 * 1024;
-const BUF_LOW      = 1  * 1024 * 1024;
+// Chrome's hard send-queue cap per RTCDataChannel is 16 MiB; if bufferedAmount
+// hits it, send() throws "send queue is full" synchronously. Keep our high
+// watermark well below that to leave headroom for the frame about to be sent
+// AND for any in-flight raciness with bufferedamountlow events.
+const BUF_HIGH     = 8 * 1024 * 1024;
+const BUF_LOW      = 1 * 1024 * 1024;
 const STREAMS      = 4;
 const HASH_BLOCK   = 1 * 1024 * 1024;
 const ICE_TIMEOUT  = 5000;
@@ -857,14 +861,6 @@ async function sendChunks(file, channels, onProgress) {
       const ch = channels[idx];
       if (ch.readyState !== 'open') throw new Error(`channel ${ch.label} not open`);
 
-      // Backpressure: pause if buffer too big.
-      if (ch.bufferedAmount > BUF_HIGH) {
-        await new Promise((resolve) => {
-          const onLow = () => { ch.removeEventListener('bufferedamountlow', onLow); resolve(); };
-          ch.addEventListener('bufferedamountlow', onLow);
-        });
-      }
-
       const offset = chunkId * CHUNK_SIZE;
       const end = Math.min(offset + CHUNK_SIZE, file.size);
       let payload;
@@ -877,7 +873,22 @@ async function sendChunks(file, channels, onProgress) {
       const frame = new Uint8Array(HEADER_LEN + payload.length);
       new DataView(frame.buffer).setUint32(0, chunkId, false);
       frame.set(payload, HEADER_LEN);
-      ch.send(frame);
+
+      // Backpressure: ensure THIS frame's send won't push bufferedAmount past
+      // BUF_HIGH. Loop because bufferedamountlow may fire while we're still
+      // above the threshold under concurrent activity.
+      while (ch.bufferedAmount + frame.length > BUF_HIGH) {
+        await new Promise((resolve) => {
+          ch.addEventListener('bufferedamountlow', resolve, { once: true });
+        });
+        if (ch.readyState !== 'open') throw new Error(`channel ${ch.label} closed during backpressure wait`);
+      }
+
+      try {
+        ch.send(frame);
+      } catch (e) {
+        throw new Error(`send() failed at chunk ${chunkId} (bufferedAmount=${ch.bufferedAmount}): ${e.message}`);
+      }
 
       sent += payload.length;
       const now = performance.now();
