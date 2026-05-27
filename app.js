@@ -154,8 +154,15 @@ function expandSdp(c) {
     `a=max-message-size:${maxMsg}`,
   ];
   for (const cand of c.c || []) lines.push(`a=candidate:${cand}`);
+  // Signal that we're not trickling additional candidates after this SDP.
+  // Some implementations wait for this marker when ice-options:trickle is set.
+  lines.push('a=end-of-candidates');
   return { type, sdp: lines.join('\r\n') + '\r\n' };
 }
+
+// Debug flag — disables SDP compaction so we can rule it out as a cause of
+// failed ICE. Append ?raw=1 to the URL to enable.
+const RAW_SDP = new URLSearchParams(location.search).has('raw');
 
 // ---------- pack/unpack: JSON -> deflate-raw -> base64url ----------
 //
@@ -164,7 +171,7 @@ function expandSdp(c) {
 // fields (e.g. 'meta') are passed through.
 async function pack(obj) {
   const wire = { ...obj };
-  if (wire.sdp) wire.sdp = compactSdp(wire.sdp);
+  if (wire.sdp && !RAW_SDP) wire.sdp = compactSdp(wire.sdp);
   const json = JSON.stringify(wire);
   const cs = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
   const buf = new Uint8Array(await new Response(cs).arrayBuffer());
@@ -180,7 +187,9 @@ async function unpack(s) {
   for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
   const ds = new Blob([buf]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   const wire = JSON.parse(await new Response(ds).text());
-  if (wire.sdp) wire.sdp = expandSdp(wire.sdp);
+  // Compact form is an object with field 't'; raw form is the original
+  // RTCSessionDescriptionInit with 'type' and 'sdp'. Detect and expand.
+  if (wire.sdp && wire.sdp.t !== undefined) wire.sdp = expandSdp(wire.sdp);
   return wire;
 }
 
@@ -303,6 +312,32 @@ async function doDiag(pc) {
       lines.push('');
       lines.push(`selected: ${sp ? sp.state : '?'}`);
     }
+
+    // Per-candidate detail for failures: list local & remote candidate addresses
+    // so we can see EXACTLY what was attempted.
+    lines.push('');
+    lines.push(`local-candidate entries (${locals.size}):`);
+    locals.forEach((c) => {
+      lines.push(`  ${c.candidateType}/${(c.protocol || '').toUpperCase()} ${c.address || c.ip}:${c.port} prio=${c.priority || '?'}`);
+    });
+    lines.push(`remote-candidate entries (${remotes.size}):`);
+    remotes.forEach((c) => {
+      lines.push(`  ${c.candidateType}/${(c.protocol || '').toUpperCase()} ${c.address || c.ip}:${c.port} prio=${c.priority || '?'}`);
+    });
+  }
+
+  // Append raw SDPs (truncated if huge) so we can inspect what each side saw.
+  const localSdp = pc.localDescription && pc.localDescription.sdp;
+  const remoteSdp = pc.remoteDescription && pc.remoteDescription.sdp;
+  if (localSdp) {
+    lines.push('');
+    lines.push('--- local SDP ---');
+    lines.push(localSdp.trim());
+  }
+  if (remoteSdp) {
+    lines.push('');
+    lines.push('--- remote SDP ---');
+    lines.push(remoteSdp.trim());
   }
 
   out.textContent = lines.join('\n');
@@ -388,9 +423,11 @@ function renderCandidates(container, sdp, label = 'Your ICE candidates') {
   });
   for (const c of cands) {
     const li = document.createElement('li');
-    li.className = `${c.type} ${c.proto}`;
+    const v6 = /:/.test(c.ip) && !c.isMdns;
+    li.className = `${c.type} ${c.proto}` + (v6 ? ' v6' : '');
     const ipDisplay = c.isMdns ? `${c.ip} (mDNS)` : c.ip;
-    li.innerHTML = `<span class="type">${escapeHtml(c.type)}</span> ${escapeHtml(c.proto.toUpperCase())}  ${escapeHtml(ipDisplay)}:${c.port}`;
+    const family = v6 ? '<span class="fam v6">v6</span> ' : (c.isMdns ? '' : '<span class="fam v4">v4</span> ');
+    li.innerHTML = `<span class="type">${escapeHtml(c.type)}</span> ${escapeHtml(c.proto.toUpperCase())}  ${family}${escapeHtml(ipDisplay)}:${c.port}`;
     ul.appendChild(li);
   }
   container.appendChild(ul);
@@ -947,9 +984,81 @@ function escapeHtml(s) {
 }
 
 // =================================================================
+// Network capability probe
+// =================================================================
+//
+// Pre-warm a throwaway PeerConnection on page load to discover what kinds
+// of public addresses STUN can give us (v4, v6, both, none). This is the
+// single most-actionable signal for the user: if IPv6 srflx is present on
+// both peers, direct P2P will almost certainly work because there's no
+// NAT in the way.
+async function probeNetwork() {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  pc.createDataChannel('warmup');
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitIceComplete(pc);
+  } catch {
+    pc.close();
+    return { error: 'setLocalDescription failed' };
+  }
+  const cands = parseCandidates(pc.localDescription.sdp);
+  pc.close();
+
+  const isV6 = (ip) => /:/.test(ip);
+  const isV4 = (ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip);
+  const srflxV6 = cands.find((c) => (c.type === 'srflx' || c.type === 'prflx') && isV6(c.ip));
+  const srflxV4 = cands.find((c) => (c.type === 'srflx' || c.type === 'prflx') && isV4(c.ip));
+  const hostV6  = cands.find((c) => c.type === 'host' && !c.isMdns && isV6(c.ip));
+  const hostV4  = cands.find((c) => c.type === 'host' && !c.isMdns && isV4(c.ip));
+
+  return {
+    hasV6: !!srflxV6 || !!hostV6,
+    hasV4: !!srflxV4 || !!hostV4,
+    v6Address: srflxV6 ? `${srflxV6.ip}` : (hostV6 ? hostV6.ip : null),
+    v4Address: srflxV4 ? `${srflxV4.ip}` : (hostV4 ? hostV4.ip : null),
+    hasSrflx: !!srflxV4 || !!srflxV6,
+    cands,
+  };
+}
+
+function renderNetCap(probe) {
+  const el = $('netCap');
+  if (!el) return;
+  el.hidden = false;
+
+  if (probe.error || (!probe.hasV4 && !probe.hasV6)) {
+    el.className = 'netcap err';
+    el.innerHTML = `<strong>✗ No public addresses gathered.</strong> STUN appears blocked. Direct P2P will not work.`;
+    return;
+  }
+
+  if (probe.hasV6 && probe.hasV4) {
+    el.className = 'netcap ok';
+    el.innerHTML =
+      `<strong>✓ IPv6 + IPv4 available.</strong> Direct P2P highly likely if peer also has IPv6 (no NAT).` +
+      `<div class="badges"><span class="badge">v6: ${escapeHtml(probe.v6Address)}</span><span class="badge">v4: ${escapeHtml(probe.v4Address)}</span></div>`;
+  } else if (probe.hasV6) {
+    el.className = 'netcap ok';
+    el.innerHTML =
+      `<strong>✓ IPv6 only.</strong> Direct P2P works only if peer also has IPv6.` +
+      `<div class="badges"><span class="badge">v6: ${escapeHtml(probe.v6Address)}</span></div>`;
+  } else if (probe.hasV4 && probe.hasSrflx) {
+    el.className = 'netcap warn';
+    el.innerHTML =
+      `<strong>⚠ IPv4 only.</strong> Behind NAT. Direct P2P works only if your NAT and peer's NAT are both non-symmetric. ` +
+      `Consider enabling IPv6 on your network for reliable direct P2P.` +
+      `<div class="badges"><span class="badge">v4: ${escapeHtml(probe.v4Address)}</span></div>`;
+  } else {
+    el.className = 'netcap warn';
+    el.innerHTML = `<strong>⚠ Only local addresses gathered.</strong> STUN didn't return a public address. Connection may only work on the same LAN.`;
+  }
+}
+
+// =================================================================
 // Boot
 // =================================================================
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
   if (!window.RTCPeerConnection) {
     log('WebRTC not supported in this browser.', 'err');
     return;
@@ -966,4 +1075,6 @@ window.addEventListener('load', () => {
     return;
   }
   route();
+  // Run network probe in the background so it doesn't delay UI rendering.
+  probeNetwork().then(renderNetCap).catch((e) => log(`Network probe failed: ${e.message}`, 'warn'));
 });

@@ -25,7 +25,21 @@ body {
 }
 
 header h1 { margin: 0 0 4px; font-size: 22px; }
-header .sub { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+header .sub { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+
+.netcap {
+  margin: 0 0 24px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.netcap.ok   { border-color: #86efac; background: #f0fdf4; color: #15803d; }
+.netcap.warn { border-color: #fcd34d; background: #fffbeb; color: #92400e; }
+.netcap.err  { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
+.netcap .badges { margin-top: 4px; }
+.netcap .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font: 11px var(--mono); margin-right: 6px; background: rgba(0,0,0,0.06); color: inherit; }
 
 h2 { font-size: 18px; margin: 0 0 16px; }
 h3 { font-size: 14px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -105,6 +119,9 @@ progress { width: 100%; height: 10px; }
 .cands li.srflx .type { color: var(--ok); }
 .cands li.relay .type { color: var(--accent); }
 .cands li.tcp   { opacity: 0.65; }
+.cands li .fam { font-size: 9px; padding: 1px 4px; border-radius: 3px; vertical-align: middle; }
+.cands li .fam.v6 { background: #dbeafe; color: #1d4ed8; }
+.cands li .fam.v4 { background: #e5e7eb; color: #4b5563; }
 .qr img, .qr svg { display: block; }
 
 .log-section { margin-top: 24px; }
